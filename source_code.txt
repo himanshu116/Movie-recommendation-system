@@ -1,0 +1,45 @@
+#Movie Recommendation
+
+val df1 = spark.read.format("csv").option("header","true").option("inferSchema","true").load("/FileStore/tables/movies.csv")
+val df2 = spark.read.format("csv").option("header","true").option("inferSchema","true").load("/FileStore/tables/ratings.csv")
+
+df1.repartition(1).write.mode(SaveMode.Overwrite).parquet("/FileStore/tables/movies.parquet")
+df2.repartition(1).write.mode(SaveMode.Overwrite).parquet("/FileStore/tables/ratings.parquet")
+
+//spark.sql("drop table movies")
+//spark.sql("drop table ratings")
+//spark.sql("drop view most_rated_movies")
+
+
+spark.sql("CREATE TEMPORARY TABLE movies USING parquet OPTIONS (path \"/FileStore/tables/movies.parquet\")")
+spark.sql("CREATE TEMPORARY TABLE ratings USING parquet OPTIONS (path \"/FileStore/tables/ratings.parquet\")")
+
+spark.sql("CREATE TEMPORARY VIEW most_rated_movies as select  ratings.movieId, movies.title, count(*) as times_rated from ratings join movies on ratings.movieId = movies.movieId group by ratings.movieId, movies.title order by times_rated desc limit 200")
+
+spark.sql("SELECT * FROM most_rated_movies").show()
+
+import org.apache.spark.sql.functions
+var ratings = sqlContext.table("ratings")
+ratings.show
+val Array(training, test) = ratings.randomSplit(Array(0.8, 0.2))
+
+import org.apache.spark.ml.recommendation.ALS
+val als = new ALS()
+  .setMaxIter(5)
+  .setRegParam(0.01)
+  .setUserCol("userId")
+  .setItemCol("movieId")
+  .setRatingCol("rating")
+val model = als.fit(training)
+
+val predictions = model.transform(test).na.drop()
+predictions.createOrReplaceTempView("predictions")
+spark.sql("select userId, movieId, rating, prediction from predictions").show()
+
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+val evaluator = new RegressionEvaluator()
+  .setMetricName("rmse")
+  .setLabelCol("rating")
+  .setPredictionCol("prediction")
+val rmse = evaluator.evaluate(predictions)
+println(s"Root-mean-square error = $rmse")
